@@ -69,6 +69,7 @@ class Policy(object):
         pfn = policy file name
         '''
         self.pfn = path(pfn)
+        print "loading policy file %s" % pfn
         self.policy = json.loads(open(pfn).read())
         
         gfn = self.pfn.dirname() / 'grading_policy.json'
@@ -204,6 +205,9 @@ def make_axis(dir):
     
         # get semesters
         policies = glob.glob(dir/'policies/*.json')
+        assetsfn = dir / 'policies/assets.json'
+        if str(assetsfn) in policies:
+            policies.remove(assetsfn)
         if not policies:
             policies = glob.glob(dir/'policies/*/policy.json')
         if not policies:
