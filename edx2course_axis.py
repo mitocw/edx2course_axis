@@ -79,6 +79,7 @@ class Policy(object):
             
     @property
     def semester(self):
+        # print "semester: policy keys = %s" % self.policy.keys()
         semester = [t[1] for t in [k.split('/',1) for k in self.policy.keys()] if t[0]=='course'][0]
         return semester
 
@@ -252,7 +253,7 @@ def make_axis(dir):
         index = [1]
         caxis = []
     
-        def walk(x, seq_num=1, path=[], seq_type=None, parent_start=None):
+        def walk(x, seq_num=1, path=[], seq_type=None, parent_start=None, parent=None):
             '''
             Recursively traverse course tree.  
             
@@ -282,9 +283,24 @@ def make_axis(dir):
 
             if x.tag=='video':	# special: for video, let data = youtube ID(s)
                 data = x.get('youtube','')
+                if not data:
+                    data = x.get('youtube_id_1_0', '')
+                if data:
+                    data = '{"ytid": "%s"}' % data
 
             if x.tag=='problem' and x.get('weight') is not None and x.get('weight'):
-                data = "{weight: %s}" % x.get('weight')
+                data = "{'weight': %s}" % x.get('weight')
+                
+            if x.tag=='html':
+                iframe = x.find('.//iframe')
+                if iframe is not None:
+                    print "   found iframe in html %s" % url_name
+                    src = iframe.get('src','')
+                    if 'https://www.youtube.com/embed/' in src:
+                        m = re.search('embed/([^"/?]+)', src)
+                        if m:
+                            data = '{"ytid": "%s"}' % m.group(1)
+                            print "    data=%s" % data
                 
             if url_name:              # url_name is mandatory if we are to do anything with this element
                 # url_name = url_name.replace(':','_')
@@ -314,7 +330,7 @@ def make_axis(dir):
 
                 due = date_parse(policy.get_metadata(x, 'due', '', parent=True))
                 if x.tag=="problem":
-                    print "for %s due=%s" % (url_name, due)
+                    print "    setting problem due date: for %s due=%s" % (url_name, due)
 
                 gformat = x.get('format', policy.get_metadata(x, 'format', ''))
                 if not gformat:
@@ -343,15 +359,15 @@ def make_axis(dir):
                 index[0] += 1
             else:
                 if VERBOSE_WARNINGS:
-                    print "Missing url_name for element %s (attrib=%s)" % (x, x.attrib)
-                
+                    print "Missing url_name for element %s (attrib=%s, parent_tag=%s)" % (x, x.attrib, parent.tag)
+
             # done processing this element, now process all its children
-            if not x.tag in ['html', 'problem', 'discussion', 'customtag']:
+            if not x.tag in ['html', 'problem', 'discussion', 'customtag', 'poll_question']:
                 inherit_seq_num = (x.tag=='vertical' and not url_name)    # if <vertical> with no url_name then keep seq_num for children
                 if not inherit_seq_num:
                     seq_num = 1
                 for y in x:
-                    walk(y, seq_num, path, seq_type, parent_start=start)
+                    walk(y, seq_num, path, seq_type, parent_start=start, parent=x)
                     if not inherit_seq_num:
                         seq_num += 1
                 
@@ -369,7 +385,7 @@ def save_data_to_mongo(cid, cdat):
     cid = course_id
     cdat = course axis data
     '''
-    print "Save data to mongo unimplemented"
+    print "not implemented"
 
 # <codecell>
 
@@ -426,9 +442,6 @@ def process_course(dir):
 # <codecell>
 
 if __name__=='__main__':
-    if not os.path.exists(DATADIR):
-        os.mkdir(DATADIR)
-
     if sys.argv[1]=='-mongo':
         DO_SAVE_TO_MONGO = True
         print "============================================================ Enabling Save to Mongo"
