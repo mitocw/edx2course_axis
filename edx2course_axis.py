@@ -22,6 +22,7 @@
 # path      = path with url_name's to this item from course root, ie chapter/sequential/position
 # module_id = edX standard {org}/{course_num}/{category}/{url_name} id for an x-module
 # data      = extra data for element, eg you-tube id's for videos
+# chapter_mid = module_id of the chapter within which this x-module exists (empty if not within a chapter)
 # 
 #
 # usage:   python edx2course_axis.py COURSE_DIR
@@ -54,7 +55,7 @@ FORCE_NO_HIDE = False
 #-----------------------------------------------------------------------------
 
 # storage class for each axis element
-Axel = namedtuple('Axel', 'course_id index url_name category gformat start due name path module_id data')
+Axel = namedtuple('Axel', 'course_id index url_name category gformat start due name path module_id data chapter_mid')
 
 class Policy(object):
     '''
@@ -253,7 +254,7 @@ def make_axis(dir):
         index = [1]
         caxis = []
     
-        def walk(x, seq_num=1, path=[], seq_type=None, parent_start=None, parent=None):
+        def walk(x, seq_num=1, path=[], seq_type=None, parent_start=None, parent=None, chapter=None):
             '''
             Recursively traverse course tree.  
             
@@ -262,6 +263,8 @@ def make_axis(dir):
             path     = list of url_name's to current element, following edX's hierarchy conventions
             seq_type = problemset, sequential, or videosequence
             parent_start = start date of parent of current etree element
+            parent   = parent module
+            chapter  = the last chapter module_id seen while walking through the tree
             '''
             url_name = x.get('url_name',x.get('url_name_orig',''))
             if not url_name:
@@ -283,6 +286,14 @@ def make_axis(dir):
 
             if x.tag=='video':	# special: for video, let data = youtube ID(s)
                 data = x.get('youtube','')
+                if data:
+                    # old ytid format - extract just the 1.0 part of this 
+                    # 0.75:JdL1Vo0Hru0,1.0:lbaG3uiQ6IY,1.25:Lrj0G8RWHKw,1.50:54fs3-WxqLs
+                    ytid = data.replace(' ','').split(',')
+                    ytid = [z[1] for z in [y.split(':') for y in ytid] if z[0]=='1.0']
+                    print "   ytid: %s -> %s" % (x.get('youtube',''), ytid)
+                    if ytid:
+                        data = ytid
                 if not data:
                     data = x.get('youtube_id_1_0', '')
                 if data:
@@ -354,12 +365,18 @@ def make_axis(dir):
                 
                 # done with getting all info for this axis element; save it
                 path_str = '/' + '/'.join(path)
-                ae = Axel(cid, index[0], url_name, x.tag, gformat, start, due, dn, path_str, module_id, data)
+                ae = Axel(cid, index[0], url_name, x.tag, gformat, start, due, dn, path_str, module_id, data, chapter)
                 caxis.append(ae)
                 index[0] += 1
             else:
                 if VERBOSE_WARNINGS:
-                    print "Missing url_name for element %s (attrib=%s, parent_tag=%s)" % (x, x.attrib, parent.tag)
+                    print "Missing url_name for element %s (attrib=%s, parent_tag=%s)" % (x, x.attrib, (parent.tag if parent is not None else ''))
+
+            # chapter?
+            if x.tag=='chapter':
+                the_chapter = module_id
+            else:
+                the_chapter = chapter
 
             # done processing this element, now process all its children
             if not x.tag in ['html', 'problem', 'discussion', 'customtag', 'poll_question']:
@@ -367,7 +384,7 @@ def make_axis(dir):
                 if not inherit_seq_num:
                     seq_num = 1
                 for y in x:
-                    walk(y, seq_num, path, seq_type, parent_start=start, parent=x)
+                    walk(y, seq_num, path, seq_type, parent_start=start, parent=x, chapter=the_chapter)
                     if not inherit_seq_num:
                         seq_num += 1
                 
@@ -378,14 +395,16 @@ def make_axis(dir):
 
 # <codecell>
 
-def save_data_to_mongo(cid, cdat):
+def save_data_to_mongo(cid, cdat, caset):
     '''
     Save course axis data to mongo
     
     cid = course_id
     cdat = course axis data
+    caset = list of course axis data in dict format
     '''
-    print "not implemented"
+    import save_to_mongo
+    save_to_mongo.do_save(cid, caset)
 
 # <codecell>
 
@@ -408,18 +427,18 @@ def process_course(dir):
 
         print "saving data for %s" % cid
 
-        header = ("index", "url_name", "category", "gformat", "start", 'due', "name", "path", "module_id", "data")
+        header = ("index", "url_name", "category", "gformat", "start", 'due', "name", "path", "module_id", "data", "chapter_mid")
         caset = [{ x: getattr(ae,x) for x in header } for ae in cdat['axis']]
 
         # optional save to mongodb
         if DO_SAVE_TO_MONGO:
-            save_data_to_mongo(cid, cdat)
+            save_data_to_mongo(cid, cdat, caset)
         
         # print out to text file
         afp = codecs.open('%s/axis_%s.txt' % (DATADIR, cid.replace('/','_')),'w', encoding='utf8')
-        aformat = "%8s\t%40s\t%24s\t%16s\t%16s\t%16s\t%s\t%s\t%s\t%s\n"
+        aformat = "%8s\t%40s\t%24s\t%16s\t%16s\t%16s\t%s\t%s\t%s\t%s\t%s\n"
         afp.write(aformat % header)
-        afp.write(aformat % tuple(["--------"] *10))
+        afp.write(aformat % tuple(["--------"] *11))
         for ca in caset:
             afp.write(aformat % tuple([ca[x] for x in header]))
         afp.close()
