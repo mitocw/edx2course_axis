@@ -291,7 +291,7 @@ def make_axis(dir):
                     # 0.75:JdL1Vo0Hru0,1.0:lbaG3uiQ6IY,1.25:Lrj0G8RWHKw,1.50:54fs3-WxqLs
                     ytid = data.replace(' ','').split(',')
                     ytid = [z[1] for z in [y.split(':') for y in ytid] if z[0]=='1.0']
-                    print "   ytid: %s -> %s" % (x.get('youtube',''), ytid)
+                    # print "   ytid: %s -> %s" % (x.get('youtube',''), ytid)
                     if ytid:
                         data = ytid
                 if not data:
@@ -300,7 +300,7 @@ def make_axis(dir):
                     data = '{"ytid": "%s"}' % data
 
             if x.tag=='problem' and x.get('weight') is not None and x.get('weight'):
-                data = "{'weight': %s}" % x.get('weight')
+                data = '{"weight": %f}' % float(x.get('weight'))
                 
             if x.tag=='html':
                 iframe = x.find('.//iframe')
@@ -344,8 +344,8 @@ def make_axis(dir):
                     print "    setting problem due date: for %s due=%s" % (url_name, due)
 
                 gformat = x.get('format', policy.get_metadata(x, 'format', ''))
-                if not gformat:
-                    gformat = get_from_parent(x, 'format', '')
+                if url_name=='hw0':
+                    print "gformat for hw0 = %s" % gformat
 
                 # compute path
                 # The hierarchy goes: `course > chapter > (problemset | sequential | videosequence)`
@@ -363,6 +363,9 @@ def make_axis(dir):
                 else:
                     module_id = '%s/%s/%s/%s' % (org, course, x.tag, url_name)
                 
+                # debugging
+                # print "     module %s gformat=%s" % (module_id, gformat)
+
                 # done with getting all info for this axis element; save it
                 path_str = '/' + '/'.join(path)
                 ae = Axel(cid, index[0], url_name, x.tag, gformat, start, due, dn, path_str, module_id, data, chapter)
@@ -379,14 +382,15 @@ def make_axis(dir):
                 the_chapter = chapter
 
             # done processing this element, now process all its children
-            if not x.tag in ['html', 'problem', 'discussion', 'customtag', 'poll_question']:
+            if (not x.tag in ['html', 'problem', 'discussion', 'customtag', 'poll_question']):
                 inherit_seq_num = (x.tag=='vertical' and not url_name)    # if <vertical> with no url_name then keep seq_num for children
                 if not inherit_seq_num:
                     seq_num = 1
                 for y in x:
-                    walk(y, seq_num, path, seq_type, parent_start=start, parent=x, chapter=the_chapter)
-                    if not inherit_seq_num:
-                        seq_num += 1
+                    if (not str(y).startswith('<!--')) and (not y.tag in ['discussion', 'source']):
+                        walk(y, seq_num, path, seq_type, parent_start=start, parent=x, chapter=the_chapter)
+                        if not inherit_seq_num:
+                            seq_num += 1
                 
         walk(cxml)
         ret[cid] = dict(policy=policy.policy, bundle=bundle, axis=caxis, grading_policy=policy.grading_policy)
