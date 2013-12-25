@@ -26,6 +26,8 @@
 # 
 #
 # usage:   python edx2course_axis.py COURSE_DIR
+#
+# or:      python edx2course_axis.py course_tar_file.xml.tar.gz
 
 # requires BeautifulSoup and path.py to be installed
 
@@ -38,6 +40,7 @@ import json
 import glob
 import datetime
 import xbundle
+import tempfile
 from collections import namedtuple
 from lxml import etree
 from path import path
@@ -133,7 +136,8 @@ def date_parse(datestr, retbad=False):
     if not datestr:
         return None
 
-    formats = ['%Y-%m-%dT%H:%M:%S.%f',    	# 2012-12-04T13:48:28.427430
+    formats = ['%Y-%m-%dT%H:%M:%SZ',    	# 2013-11-13T21:00:00Z
+               '%Y-%m-%dT%H:%M:%S.%f',    	# 2012-12-04T13:48:28.427430
                '%Y-%m-%dT%H:%M:%S',
                '%Y-%m-%dT%H:%M',		# 2013-02-12T19:00
                '%B %d, %Y',			# February 25, 2013
@@ -300,7 +304,10 @@ def make_axis(dir):
                     data = '{"ytid": "%s"}' % data
 
             if x.tag=='problem' and x.get('weight') is not None and x.get('weight'):
-                data = '{"weight": %f}' % float(x.get('weight'))
+                try:
+                    data = '{"weight": %f}' % float(x.get('weight'))
+                except Exception as err:
+                    print "    Error converting weight %s" % x.get('weight')
                 
             if x.tag=='html':
                 iframe = x.find('.//iframe')
@@ -382,7 +389,7 @@ def make_axis(dir):
                 the_chapter = chapter
 
             # done processing this element, now process all its children
-            if (not x.tag in ['html', 'problem', 'discussion', 'customtag', 'poll_question']):
+            if (not x.tag in ['html', 'problem', 'discussion', 'customtag', 'poll_question', 'combinedopenended', 'metadata']):
                 inherit_seq_num = (x.tag=='vertical' and not url_name)    # if <vertical> with no url_name then keep seq_num for children
                 if not inherit_seq_num:
                     seq_num = 1
@@ -399,16 +406,17 @@ def make_axis(dir):
 
 # <codecell>
 
-def save_data_to_mongo(cid, cdat, caset):
+def save_data_to_mongo(cid, cdat, caset, xbundle=None):
     '''
     Save course axis data to mongo
     
     cid = course_id
     cdat = course axis data
     caset = list of course axis data in dict format
+    xbundle = XML bundle of course (everything except static files)
     '''
     import save_to_mongo
-    save_to_mongo.do_save(cid, caset)
+    save_to_mongo.do_save(cid, caset, xbundle)
 
 # <codecell>
 
@@ -420,9 +428,13 @@ def process_course(dir):
     # save data as csv and txt: loop through each course (multiple policies can exist withing a given course dir)
     for cid, cdat in ret.iteritems():
 
+        print "=================================================="
+
         # write out xbundle to xml file
         bfn = '%s/xbundle_%s.xml' % (DATADIR, cid.replace('/','_'))
         codecs.open(bfn,'w',encoding='utf8').write(ret[cid]['bundle'])
+
+        print "Writing out xbundle to %s" % bfn
         
         # clean up xml file with xmllint if available
         if os.system('which xmllint')==0:
@@ -436,7 +448,7 @@ def process_course(dir):
 
         # optional save to mongodb
         if DO_SAVE_TO_MONGO:
-            save_data_to_mongo(cid, cdat, caset)
+            save_data_to_mongo(cid, cdat, caset, ret[cid]['bundle'])
         
         # print out to text file
         afp = codecs.open('%s/axis_%s.txt' % (DATADIR, cid.replace('/','_')),'w', encoding='utf8')
@@ -465,10 +477,27 @@ def process_course(dir):
 # <codecell>
 
 if __name__=='__main__':
+    if not os.path.exists(DATADIR):
+        os.path.mkdir(DATADIR)
     if sys.argv[1]=='-mongo':
         DO_SAVE_TO_MONGO = True
         print "============================================================ Enabling Save to Mongo"
         sys.argv.pop(1)
-    for dir in sys.argv[1:]:
-        process_course(dir)
+    for fn in sys.argv[1:]:
+        if os.path.isdir(fn):
+            process_course(fn)
+        else:
+            # not a directory - is it a tar.gz file?
+            if fn.endswith('.tar.gz') or fn.endswith('.tgz'):
+                fnabs = os.path.abspath(fn)
+                tdir = tempfile.mkdtemp()
+                cmd = "cd %s; tar xzf %s" % (tdir, fnabs)
+                print "running %s" % cmd
+                os.system(cmd)
+                newfn = glob.glob('%s/*' % tdir)[0]
+                print "Using %s as the course xml directory" % newfn
+                process_course(newfn)
+                print "removing temporary files %s" % tdir
+                os.system('rm -rf %s' % tdir)
+                
 
