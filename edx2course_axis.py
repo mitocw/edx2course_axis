@@ -477,12 +477,19 @@ def process_course(dir):
 # <codecell>
 
 if __name__=='__main__':
-    if not os.path.exists(DATADIR):
-        os.path.mkdir(DATADIR)
     if sys.argv[1]=='-mongo':
         DO_SAVE_TO_MONGO = True
         print "============================================================ Enabling Save to Mongo"
         sys.argv.pop(1)
+
+    if sys.argv[1]=='-datadir':
+        sys.argv.pop(1)
+        DATADIR = sys.argv[1]
+        sys.argv.pop(1)
+        print "==> using %s as DATADIR" % DATADIR
+
+    if not os.path.exists(DATADIR):
+        os.mkdir(DATADIR)
     for fn in sys.argv[1:]:
         if os.path.isdir(fn):
             process_course(fn)
