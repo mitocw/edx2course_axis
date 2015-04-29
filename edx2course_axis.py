@@ -41,12 +41,13 @@ import glob
 import datetime
 import xbundle
 import tempfile
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from lxml import etree
 from path import path
 from fix_unicode import fix_bad_unicode
 
 DO_SAVE_TO_MONGO = False
+DO_SAVE_TO_BIGQUERY = False
 DATADIR = "DATA"
 
 VERBOSE_WARNINGS = True
@@ -136,9 +137,13 @@ def date_parse(datestr, retbad=False):
     if not datestr:
         return None
 
+    if datestr.startswith('"') and datestr.endswith('"'):
+        datestr = datestr[1:-1]
+
     formats = ['%Y-%m-%dT%H:%M:%SZ',    	# 2013-11-13T21:00:00Z
                '%Y-%m-%dT%H:%M:%S.%f',    	# 2012-12-04T13:48:28.427430
                '%Y-%m-%dT%H:%M:%S',
+               '%Y-%m-%dT%H:%M:%S+00:00',	# 2014-12-09T15:00:00+00:00 
                '%Y-%m-%dT%H:%M',		# 2013-02-12T19:00
                '%B %d, %Y',			# February 25, 2013
                '%B %d, %H:%M, %Y', 		# December 12, 22:00, 2012
@@ -197,6 +202,12 @@ def make_axis(dir):
     '''
     
     courses = []
+    log_msg = []
+
+    def logit(msg, nolog=False):
+        if not nolog:
+            log_msg.append(msg)
+        print msg
 
     dir = path(dir)
 
@@ -217,12 +228,12 @@ def make_axis(dir):
         if not policies:
             policies = glob.glob(dir/'policies/*/policy.json')
         if not policies:
-            print "Error: no policy files found!"
+            logit("Error: no policy files found!")
         
         courses = [ CourseInfo(fn, pfn) for pfn in policies ]
 
 
-    print "%d course runs found: %s" % (len(courses), [c.url_name for c in courses])
+    logit("%d course runs found: %s" % (len(courses), [c.url_name for c in courses]))
     
     ret = {}
 
@@ -233,7 +244,7 @@ def make_axis(dir):
         org = cinfo.org
         course = cinfo.course
         cid = '%s/%s/%s' % (org, course, semester)
-        print cid
+        logit('course_id=%s' %  cid)
     
         cfn = dir / ('course/%s.xml' % semester)
         
@@ -285,7 +296,7 @@ def make_axis(dir):
             if not FORCE_NO_HIDE:
                 hide = policy.get_metadata(x, 'hide_from_toc')
                 if hide is not None and not hide=="false":
-                    print '[edx2course_axis] Skipping %s (%s), it has hide_from_toc=%s' % (x.tag, x.get('display_name','<noname>'), hide)
+                    logit('[edx2course_axis] Skipping %s (%s), it has hide_from_toc=%s' % (x.tag, x.get('display_name','<noname>'), hide))
                     return
 
             if x.tag=='video':	# special: for video, let data = youtube ID(s)
@@ -307,18 +318,18 @@ def make_axis(dir):
                 try:
                     data = '{"weight": %f}' % float(x.get('weight'))
                 except Exception as err:
-                    print "    Error converting weight %s" % x.get('weight')
+                    logit("    Error converting weight %s" % x.get('weight'))
                 
             if x.tag=='html':
                 iframe = x.find('.//iframe')
                 if iframe is not None:
-                    print "   found iframe in html %s" % url_name
+                    logit("   found iframe in html %s" % url_name)
                     src = iframe.get('src','')
                     if 'https://www.youtube.com/embed/' in src:
                         m = re.search('embed/([^"/?]+)', src)
                         if m:
                             data = '{"ytid": "%s"}' % m.group(1)
-                            print "    data=%s" % data
+                            logit("    data=%s" % data)
                 
             if url_name:              # url_name is mandatory if we are to do anything with this element
                 # url_name = url_name.replace(':','_')
@@ -328,7 +339,7 @@ def make_axis(dir):
                     dn = unicode(dn)
                     dn = fix_bad_unicode(dn)
                 except Exception as err:
-                    print 'unicode error, type(dn)=%s'  % type(dn)
+                    logit('unicode error, type(dn)=%s'  % type(dn))
                     raise
                 pdn = policy.get_metadata(x, 'display_name')      # policy display_name - if given, let that override default
                 if pdn is not None:
@@ -338,7 +349,8 @@ def make_axis(dir):
                 start = date_parse(policy.get_metadata(x, 'start', '', parent=True))
                 
                 if parent_start is not None and start < parent_start:
-                    print "Warning: start of %s element %s happens before start %s of parent: using parent start" % (start, x, parent_start)
+                    if VERBOSE_WARNINGS:
+                        logit("    Warning: start of %s element %s happens before start %s of parent: using parent start" % (start, x.tag, parent_start), nolog=True)
                     start = parent_start
                 #print "start for %s = %s" % (x, start)
                 
@@ -348,17 +360,17 @@ def make_axis(dir):
 
                 due = date_parse(policy.get_metadata(x, 'due', '', parent=True))
                 if x.tag=="problem":
-                    print "    setting problem due date: for %s due=%s" % (url_name, due)
+                    logit("    setting problem due date: for %s due=%s" % (url_name, due), nolog=True)
 
                 gformat = x.get('format', policy.get_metadata(x, 'format', ''))
                 if url_name=='hw0':
-                    print "gformat for hw0 = %s" % gformat
+                    logit( "gformat for hw0 = %s" % gformat)
 
                 # compute path
                 # The hierarchy goes: `course > chapter > (problemset | sequential | videosequence)`
                 if x.tag=='chapter':
                     path = [url_name]
-                elif x.tag in ['problemset', 'sequential', 'videosequence']:
+                elif x.tag in ['problemset', 'sequential', 'videosequence', 'proctor', 'randomize']:
                     seq_type = x.tag
                     path = [path[0], url_name]
                 else:
@@ -380,7 +392,10 @@ def make_axis(dir):
                 index[0] += 1
             else:
                 if VERBOSE_WARNINGS:
-                    print "Missing url_name for element %s (attrib=%s, parent_tag=%s)" % (x, x.attrib, (parent.tag if parent is not None else ''))
+                    if x.tag in ['transcript', 'wiki', 'metadata']:
+                        pass
+                    else:
+                        logit("Missing url_name for element %s (attrib=%s, parent_tag=%s)" % (x, x.attrib, (parent.tag if parent is not None else '')))
 
             # chapter?
             if x.tag=='chapter':
@@ -400,7 +415,12 @@ def make_axis(dir):
                             seq_num += 1
                 
         walk(cxml)
-        ret[cid] = dict(policy=policy.policy, bundle=bundle, axis=caxis, grading_policy=policy.grading_policy)
+        ret[cid] = dict(policy=policy.policy, 
+                        bundle=bundle, 
+                        axis=caxis, 
+                        grading_policy=policy.grading_policy,
+                        log_msg=log_msg,
+                        )
     
     return ret
 
@@ -420,19 +440,70 @@ def save_data_to_mongo(cid, cdat, caset, xbundle=None):
 
 # <codecell>
 
+def save_data_to_bigquery(cid, cdat, caset, xbundle=None, datadir=None, log_msg=None,
+                          use_dataset_latest=False):
+    '''
+    Save course axis data to bigquery
+    
+    cid = course_id
+    cdat = course axis data
+    caset = list of course axis data in dict format
+    xbundle = XML bundle of course (everything except static files)
+    '''
+    import axis2bigquery
+    axis2bigquery.do_save(cid, caset, xbundle, datadir, log_msg, use_dataset_latest=use_dataset_latest)
+
+# <codecell>
+
 #-----------------------------------------------------------------------------
 
-def process_course(dir):
+def fix_duplicate_url_name_vertical(axis):
+    '''
+    1. Look for duplicate url_name values
+    2. If a vertical has a duplicate url_name with anything else, rename that url_name
+       to have a "_vert" suffix.  
+
+    axis = list of Axel objects
+    '''
+    axis_by_url_name = defaultdict(list)
+    for idx in range(len(axis)):
+        ael = axis[idx]
+        axis_by_url_name[ael.url_name].append(idx)
+    
+    for url_name, idxset in axis_by_url_name.items():
+        if len(idxset)==1:
+            continue
+        print "--> Duplicate url_name %s shared by:" % url_name
+        vert = None
+        for idx in idxset:
+            ael = axis[idx]
+            print "       %s" % str(ael)
+            if ael.category=='vertical':
+                nun = "%s_vertical" % url_name
+                print "          --> renaming url_name to become %s" % nun
+                new_ael = ael._replace(url_name=nun)
+                axis[idx] = new_ael
+
+#-----------------------------------------------------------------------------
+
+def process_course(dir, use_dataset_latest=False, force_course_id=None):
+    '''
+    if force_course_id is specified, then that value is used as the course_id
+    '''
     ret = make_axis(dir)
 
     # save data as csv and txt: loop through each course (multiple policies can exist withing a given course dir)
-    for cid, cdat in ret.iteritems():
+    for default_cid, cdat in ret.iteritems():
 
-        print "=================================================="
+        cid = force_course_id or default_cid
+
+        print "================================================== (%s)" % cid
+
+        log_msg = cdat['log_msg']
 
         # write out xbundle to xml file
-        bfn = '%s/xbundle_%s.xml' % (DATADIR, cid.replace('/','_'))
-        codecs.open(bfn,'w',encoding='utf8').write(ret[cid]['bundle'])
+        bfn = '%s/xbundle_%s.xml' % (DATADIR, cid.replace('/','__'))
+        codecs.open(bfn,'w',encoding='utf8').write(ret[default_cid]['bundle'])
 
         print "Writing out xbundle to %s" % bfn
         
@@ -443,15 +514,21 @@ def process_course(dir):
 
         print "saving data for %s" % cid
 
+        fix_duplicate_url_name_vertical(cdat['axis'])
+
         header = ("index", "url_name", "category", "gformat", "start", 'due', "name", "path", "module_id", "data", "chapter_mid")
         caset = [{ x: getattr(ae,x) for x in header } for ae in cdat['axis']]
 
         # optional save to mongodb
         if DO_SAVE_TO_MONGO:
-            save_data_to_mongo(cid, cdat, caset, ret[cid]['bundle'])
+            save_data_to_mongo(cid, cdat, caset, ret[default_cid]['bundle'])
         
+        # optional save to bigquery
+        if DO_SAVE_TO_BIGQUERY:
+            save_data_to_bigquery(cid, cdat, caset, ret[default_cid]['bundle'], DATADIR, log_msg, use_dataset_latest=use_dataset_latest)
+
         # print out to text file
-        afp = codecs.open('%s/axis_%s.txt' % (DATADIR, cid.replace('/','_')),'w', encoding='utf8')
+        afp = codecs.open('%s/axis_%s.txt' % (DATADIR, cid.replace('/','__')),'w', encoding='utf8')
         aformat = "%8s\t%40s\t%24s\t%16s\t%16s\t%16s\t%s\t%s\t%s\t%s\t%s\n"
         afp.write(aformat % header)
         afp.write(aformat % tuple(["--------"] *11))
@@ -460,7 +537,7 @@ def process_course(dir):
         afp.close()
         
         # save as csv file
-        csvfn = '%s/axis_%s.csv' % (DATADIR, cid.replace('/','_'))
+        csvfn = '%s/axis_%s.csv' % (DATADIR, cid.replace('/','__'))
         fp = open(csvfn, 'wb')
         writer = csv.writer(fp, dialect="excel", quotechar='"', quoting=csv.QUOTE_ALL)
         writer.writerow(header)
@@ -473,6 +550,24 @@ def process_course(dir):
                 print "Error=%s" % err
         fp.close()
         print "Saved course axis to %s" % csvfn
+
+# <codecell>
+
+def process_xml_tar_gz_file(fndir, use_dataset_latest=False, force_course_id=None):
+    '''
+    convert *.xml.tar.gz to course axis
+    This could be improved to use the python tar & gzip libraries.
+    '''
+    fnabs = os.path.abspath(fndir)
+    tdir = tempfile.mkdtemp()
+    cmd = "cd %s; tar xzf %s" % (tdir, fnabs)
+    print "running %s" % cmd
+    os.system(cmd)
+    newfn = glob.glob('%s/*' % tdir)[0]
+    print "Using %s as the course xml directory" % newfn
+    process_course(newfn, use_dataset_latest=use_dataset_latest, force_course_id=force_course_id)
+    print "removing temporary files %s" % tdir
+    os.system('rm -rf %s' % tdir)
 
 # <codecell>
 
@@ -496,15 +591,6 @@ if __name__=='__main__':
         else:
             # not a directory - is it a tar.gz file?
             if fn.endswith('.tar.gz') or fn.endswith('.tgz'):
-                fnabs = os.path.abspath(fn)
-                tdir = tempfile.mkdtemp()
-                cmd = "cd %s; tar xzf %s" % (tdir, fnabs)
-                print "running %s" % cmd
-                os.system(cmd)
-                newfn = glob.glob('%s/*' % tdir)[0]
-                print "Using %s as the course xml directory" % newfn
-                process_course(newfn)
-                print "removing temporary files %s" % tdir
-                os.system('rm -rf %s' % tdir)
+                process_xml_tar_gz_file(fn)
                 
 
