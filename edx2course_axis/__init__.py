@@ -31,12 +31,10 @@ chapter_mid = module_id of the chapter within which this x-module exists
 usage:   python edx2course_axis.py COURSE_DIR
 
 or:      python edx2course_axis.py course_tar_file.xml.tar.gz
-
-requires BeautifulSoup and path.py to be installed
 """
 
 import os
-import sys
+from os.path import exists, join, dirname
 import re
 import csv
 import logging
@@ -48,19 +46,16 @@ import xbundle
 import tempfile
 from collections import namedtuple, defaultdict
 from lxml import etree
-from path import path
-from fix_unicode import fix_bad_unicode
+from .fix_unicode import fix_bad_unicode
 
-DO_SAVE_TO_MONGO = False
 DO_SAVE_TO_BIGQUERY = False
-DATADIR = "DATA"
 
 VERBOSE_WARNINGS = True
 FORCE_NO_HIDE = False
 
 log = logging.getLogger()  # pylint: disable=invalid-name
 logging.basicConfig()
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.ERROR)
 
 # storage class for each axis element
 Axel = namedtuple(
@@ -82,12 +77,12 @@ class Policy(object):
         """
         pfn = policy file name
         """
-        self.pfn = path(pfn)
+        self.pfn = pfn
         print "loading policy file %s" % pfn
         self.policy = json.loads(open(pfn).read())
 
-        gfn = self.pfn.dirname() / 'grading_policy.json'
-        if os.path.exists(gfn):
+        gfn = os.path.join(dirname(self.pfn), 'grading_policy.json')
+        if exists(gfn):
             self.gfn = gfn
             self.grading_policy = json.loads(open(gfn).read())
 
@@ -173,7 +168,7 @@ def date_parse(datestr, retbad=False):
         except ValueError:
             continue
 
-    print "Date %s unparsable" % datestr
+    log.debug("Date %s unparsable", datestr)
     if retbad:
         return "Bad"
     return None
@@ -193,13 +188,13 @@ class CourseInfo(object):
         if policyfn:
             self.load_policy(policyfn)
         else:
-            pfn = course_dir / 'policies' / self.url_name + ".json"
-            if not os.path.exists(pfn):
-                pfn = course_dir / 'policies' / self.url_name / "policy.json"
-            if os.path.exists(pfn):
+            pfn = join(course_dir, 'policies', self.url_name+".json")
+            if not exists(pfn):
+                pfn = join(course_dir, 'policies', self.url_name, "policy.json")
+            if exists(pfn):
                 self.load_policy(pfn)
             else:
-                log.error("Missing policy file {0}".format(pfn))
+                log.error("Missing policy file %s", pfn)
 
     def load_policy(self, pfn):
         """
@@ -215,13 +210,11 @@ def make_axis(course_dir):
     """
     # Because pylint thinks lxml.etree has no parse or Element members...
     # pylint: disable=no-member
-    course_dir = path(course_dir)
     courses = get_courses(course_dir)
 
     log.debug(
-        "{0} course runs found: {1}".format(
-            len(courses), [c.url_name for c in courses]
-        )
+        "%s course runs found: %s",
+        len(courses), [c.url_name for c in courses],
     )
 
     ret = {}
@@ -231,10 +224,10 @@ def make_axis(course_dir):
         policy = cinfo.policy
         course = cinfo.course
         cid = '%s/%s/%s' % (cinfo.org, course, policy.semester)
-        log.debug('course_id={0}'.format(cid))
+        log.debug('course_id=%s', cid)
         # Generate XBundle for course.
         xml = etree.parse(
-            course_dir / ('course/%s.xml' % policy.semester)
+            join(course_dir, ('course/%s.xml' % policy.semester))
         ).getroot()
         bundle = xbundle.XBundle(
             keep_urls=True,
@@ -270,24 +263,24 @@ def get_courses(course_dir):
     Get list of courses.
     """
     # if roots directory exists, use that for different course versions
-    if os.path.exists(course_dir / 'roots'):
+    if exists(join(course_dir, 'roots')):
         # get roots
-        roots = glob.glob(course_dir / 'roots/*.xml')
+        roots = glob.glob(join(course_dir, 'roots/*.xml'))
         return [CourseInfo(fn, '', course_dir) for fn in roots]
 
     # Single course.xml file - use different policy files in policy directory,
     # though
     else:
 
-        filename = course_dir / 'course.xml'
+        filename = join(course_dir, 'course.xml')
 
         # get semesters
-        policies = glob.glob(course_dir / 'policies/*.json')
-        assetsfn = course_dir / 'policies/assets.json'
+        policies = glob.glob(join(course_dir, 'policies/*.json'))
+        assetsfn = join(course_dir, 'policies/assets.json')
         if str(assetsfn) in policies:
             policies.remove(assetsfn)
         if not policies:
-            policies = glob.glob(course_dir / 'policies/*/policy.json')
+            policies = glob.glob(join(course_dir, 'policies/*/policy.json'))
         if not policies:
             log.debug("Error: no policy files found!")
 
@@ -335,12 +328,12 @@ def walk(
         hide = policy.get_metadata(element, 'hide_from_toc')
         if hide is not None and not hide == "false":
             msg = (
-                '[edx2course_axis] Skipping {0} ({1}), it has '
-                'hide_from_toc={3}'
+                '[edx2course_axis] Skipping %s (%s), it has '
+                'hide_from_toc=%s'
             )
             log.debug(
-                msg.format(
-                    element.tag, element.get('display_name', '<noname>'), hide)
+                msg, element.tag,
+                element.get('display_name', '<noname>'), hide
             )
             return
 
@@ -366,20 +359,21 @@ def walk(
         try:
             data = '{"weight": %f}' % float(element.get('weight'))
         except (TypeError, ValueError) as err:
-            log.error("Error converting weight {0}: {1}".format(
+            log.error(
+                "Error converting weight %s: %s",
                 element.get('weight'), err,
-            ))
+            )
 
     if element.tag == 'html':
         iframe = element.find('.//iframe')
         if iframe is not None:
-            log.debug("found iframe in html {0}".format(url_name))
+            log.debug("found iframe in html %s", url_name)
             src = iframe.get('src', '')
             if 'https://www.youtube.com/embed/' in src:
                 match = re.search('embed/([^"/?]+)', src)
                 if match:
                     data = '{"ytid": "%s"}' % match.group(1)
-                    log.debug("data={0}".format(data))
+                    log.debug("data=%s", data)
 
     # url_name is mandatory if we are to do anything with this element
     if url_name:
@@ -390,8 +384,7 @@ def walk(
             display_name = fix_bad_unicode(display_name)
         except Exception as ex:
             log.error(
-                'unicode error, type(display_name)={0}'.format(
-                    type(display_name)))
+                'unicode error, type(display_name)=%s', type(display_name))
             raise ex
         # policy display_name - if given, let that override default
         pdn = policy.get_metadata(element, 'display_name')
@@ -408,10 +401,10 @@ def walk(
         if parent_start is not None and start < parent_start:
             if VERBOSE_WARNINGS:
                 msg = (
-                    "Warning: start of {0} element {1} happens before start "
-                    "{2} of parent: using parent start"
+                    "Warning: start of %s element %s happens before start "
+                    "%s of parent: using parent start"
                 )
-                log.warning(msg.format(start, element.tag, parent_start))
+                log.warning(msg, start, element.tag, parent_start)
             start = parent_start
 
         # drop bad due date strings
@@ -426,8 +419,7 @@ def walk(
                 parent=True))
         if element.tag == "problem":
             log.debug(
-                "setting problem due date: for {0} due={1}".format(
-                    url_name, due))
+                "setting problem due date: for %s due=%s", url_name, due)
 
         gformat = element.get(
             'format',
@@ -436,7 +428,7 @@ def walk(
                 'format',
                 ''))
         if url_name == 'hw0':
-            log.debug("gformat for hw0 = {0}".format(gformat))
+            log.debug("gformat for hw0 = %s", gformat)
 
         # compute path
         # The hierarchy goes: `course > chapter > (problemset |
@@ -479,13 +471,12 @@ def walk(
                 pass
             else:
                 msg = (
-                    "Missing url_name for element {0} "
-                    "(attrib={1}, parent_tag={2})"
+                    "Missing url_name for element %s "
+                    "(attrib=%s, parent_tag=%s)"
                 )
                 log.warning(
-                    msg.format(
-                        element, element.attrib,
-                        (parent.tag if parent is not None else ''))
+                    msg, element, element.attrib,
+                    parent.tag if parent is not None else ''
                 )
 
     # chapter?
@@ -540,7 +531,7 @@ def save_data_to_mongo(cid, caset, bundle=None):
 
 
 def save_data_to_bigquery(cid, caset, bundle=None, log_msg=None,
-                          use_dataset_latest=False):
+                          use_dataset_latest=False, data_dir="DATA"):
     """
     Save course axis data to bigquery
 
@@ -557,7 +548,7 @@ def save_data_to_bigquery(cid, caset, bundle=None, log_msg=None,
         cid,
         caset,
         bundle,
-        DATADIR,
+        data_dir,
         log_msg,
         use_dataset_latest=use_dataset_latest)
 
@@ -590,7 +581,8 @@ def fix_duplicate_url_name_vertical(axis):
 
 
 def process_course(
-        course_path, use_dataset_latest=False, force_course_id=None):
+        course_path, use_dataset_latest=False, force_course_id=None,
+        data_dir="DATA", mongo=False, bigquery=False):
     """
     if force_course_id is specified, then that value is used as the course_id
     """
@@ -603,16 +595,10 @@ def process_course(
         cid = force_course_id or default_cid
 
         # Write out xbundle to xml file.
-        bfn = '%s/xbundle_%s.xml' % (DATADIR, cid.replace('/', '__'))
+        bfn = '%s/xbundle_%s.xml' % (data_dir, cid.replace('/', '__'))
         write_xbundle(bfn, ret[default_cid]['bundle'])
 
-        # Clean up xml file with xmllint if available.
-        if os.system('which xmllint') == 0:
-            os.system('xmllint --format %s > %s.new' % (bfn, bfn))
-            os.system('mv %s.new %s' % (bfn, bfn))
-
         print "saving data for %s" % cid
-
         fix_duplicate_url_name_vertical(cdat['axis'])
 
         header = (
@@ -624,35 +610,38 @@ def process_course(
         ]
 
         # optional save to mongodb
-        if DO_SAVE_TO_MONGO:
+        if mongo:
             save_data_to_mongo(cid, attribute_set, ret[default_cid]['bundle'])
 
         # optional save to bigquery
-        if DO_SAVE_TO_BIGQUERY:
+        if bigquery:
             save_data_to_bigquery(
                 cid,
                 attribute_set,
                 ret[default_cid]['bundle'],
                 cdat['log_msg'],
-                use_dataset_latest=use_dataset_latest)
+                use_dataset_latest=use_dataset_latest,
+                data_dir=data_dir,
+            )
 
         # save as text file
-        textfn = '{0}/axis_{1}.txt'.format(DATADIR, cid.replace('/', '__'))
+        write_text(
+            '{0}/axis_{1}.txt'.format(data_dir, cid.replace('/', '__')),
+            header, attribute_set,
+        )
 
-        write_text(textfn, header, attribute_set)
-
-        # save as csv file
-        csvfn = '%s/axis_%s.csv' % (DATADIR, cid.replace('/', '__'))
-        write_csv(csvfn, header, cid, attribute_set)
+        # Save as csv file
+        write_csv(
+            '%s/axis_%s.csv' % (data_dir, cid.replace('/', '__')),
+            header, cid, attribute_set, data_dir
+        )
 
 def write_xbundle(filename, bundle):
     """
     Write xbundle XML.
     """
     codecs.open(filename, 'w', encoding='utf8').write(bundle)
-
     print "Writing out xbundle to %s" % filename
-
     # Clean up xml file with xmllint if available.
     if os.system('which xmllint') == 0:
         os.system('xmllint --format %s > %s.new' % (filename, filename))
@@ -670,11 +659,11 @@ def write_text(filename, header, attribute_set):
         afp.write(aformat % tuple([attributes[x] for x in header]))
     afp.close()
 
-def write_csv(filename, header, cid, attribute_set):
+def write_csv(filename, header, cid, attribute_set, data_dir):
     """
     Export as CSV.
     """
-    filename = '%s/axis_%s.csv' % (DATADIR, cid.replace('/', '__'))
+    filename = '%s/axis_%s.csv' % (data_dir, cid.replace('/', '__'))
     csv_file = open(filename, 'wb')
     writer = csv.writer(
         csv_file,
@@ -687,17 +676,21 @@ def write_csv(filename, header, cid, attribute_set):
             data = [('%s' % attributes[k]).encode('utf8') for k in header]
             writer.writerow(data)
         except UnicodeEncodeError as err:
-            log.error("Failed to write row {0}: {1}".format(data, err))
+            log.error(
+                "Failed to write row %s: %s", data, err,
+            )
     csv_file.close()
     print "Saved course axis to %s" % filename
 
 def process_xml_tar_gz_file(
-        fndir, use_dataset_latest=False, force_course_id=None):
+        course_dir, use_dataset_latest=False,
+        force_course_id=None, mongo=False
+    ):
     """
     convert *.xml.tar.gz to course axis
     This could be improved to use the python tar & gzip libraries.
     """
-    fnabs = os.path.abspath(fndir)
+    fnabs = os.path.abspath(course_dir)
     tdir = tempfile.mkdtemp()
     cmd = "cd %s; tar xzf %s" % (tdir, fnabs)
     print "running %s" % cmd
@@ -707,37 +700,8 @@ def process_xml_tar_gz_file(
     process_course(
         newfn,
         use_dataset_latest=use_dataset_latest,
-        force_course_id=force_course_id)
+        force_course_id=force_course_id,
+        mongo=mongo,
+    )
     print "removing temporary files %s" % tdir
     os.system('rm -rf %s' % tdir)
-
-def main():
-    """
-    Take actions based on command-line arguments.
-    """
-    global DATADIR
-    global DO_SAVE_TO_MONGO
-
-    if sys.argv[1] == '-mongo':
-        DO_SAVE_TO_MONGO = True
-        print "============================================================ Enabling Save to Mongo"
-        sys.argv.pop(1)
-
-    if sys.argv[1] == '-datadir':
-        sys.argv.pop(1)
-        DATADIR = sys.argv[1]
-        sys.argv.pop(1)
-        print "==> using %s as DATADIR" % DATADIR
-
-    if not os.path.exists(DATADIR):
-        os.mkdir(DATADIR)
-    for filename in sys.argv[1:]:
-        if os.path.isdir(filename):
-            process_course(filename)
-        else:
-            # not a directory - is it a tar.gz file?
-            if filename.endswith('.tar.gz') or filename.endswith('.tgz'):
-                process_xml_tar_gz_file(filename)
-
-if __name__ == '__main__':
-    main()

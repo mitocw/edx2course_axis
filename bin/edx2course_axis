@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+
+"""
+Command-line tool for edx2course_axis.
+"""
+
+import sys
+import os
+
+from edx2course_axis import process_course, process_xml_tar_gz_file
+
+def main():
+    """
+    Take actions based on command-line arguments.
+    """
+    mongo = False
+    data_dir = "DATA"
+
+    if sys.argv[1] == '-mongo':
+        mongo = True
+        print "Enabling Save to Mongo"
+        sys.argv.pop(1)
+
+    if sys.argv[1] == '-datadir':
+        sys.argv.pop(1)
+        data_dir = sys.argv[1]
+        sys.argv.pop(1)
+        print "==> using %s as data_dir" % data_dir
+
+    if not os.path.exists(data_dir):
+        os.mkdir(data_dir)
+
+    for filename in sys.argv[1:]:
+        if os.path.isdir(filename):
+            process_course(filename, data_dir=data_dir, mongo=mongo)
+        else:
+            # not a directory - is it a tar.gz file?
+            if filename.endswith('.tar.gz') or filename.endswith('.tgz'):
+                process_xml_tar_gz_file(filename, mongo=mongo)
+
+if __name__ == '__main__':
+    main()
